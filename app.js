@@ -195,6 +195,9 @@ var uploadImage = function(data) {
               util.puts('upload error');
               util.puts(error);
             });
+          } else {
+            config.active = false;
+            config.counter = 0;
           }
         } else if (res.statusCode === 201) {
           config.counter = 0;
