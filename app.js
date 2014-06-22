@@ -57,7 +57,7 @@ initImage = {
 
 var initMongoDB = function() {
   return new RSVP.Promise(function(resolve, reject) {
-    //util.puts('running init...');
+    util.puts('running init...');
     Model.find({}, function(err, data) {
       if (err) reject(err);
 
@@ -73,6 +73,8 @@ var initMongoDB = function() {
 
 var cleanUp = function(image) {
   return new RSVP.Promise(function(resolve, reject) {
+    util.puts('running cleanup...');
+
     image.processed = true;
     image.save();
 
@@ -88,7 +90,7 @@ var cleanUp = function(image) {
 
 var queryNextImage = function() {
   return new RSVP.Promise(function(resolve, reject) {
-    //util.puts('running query...');
+    util.puts('running query...');
     Model.findOne({
       'processed': false
     }, function(err, data) {
@@ -100,7 +102,7 @@ var queryNextImage = function() {
 
 var getToken = function(data) {
   return new RSVP.Promise(function(resolve, reject) {
-    //util.puts('running token...');
+    util.puts('running token...');
     var options = {
       uri: config.uri + 'users/sign_in',
       method: 'GET'
@@ -139,7 +141,7 @@ var signOut = function() {
 
 var signIn = function() {
   return new RSVP.Promise(function(resolve, reject) {
-    //util.puts('running signin...');
+    util.puts('running signin...');
     var options = {
       uri: config.uri + 'users/sign_in.json',
       method: 'POST',
@@ -170,42 +172,31 @@ var signIn = function() {
 
 var uploadImage = function(data) {
   return new RSVP.Promise(function(resolve, reject) {
-    //util.puts('running upload...');
+    util.puts('running upload...');
+
     if (data === null) {
-      config.active = false;
       return;
     }
     var imagePath = config.imageFolder + data.fileName;
     var image = data;
 
-    config.active = true;
-
     fs.readFile(imagePath, function(err, data) {
 
       var r = request.post(config.uri + 'images.json', function optionalCallback(err, res, body) {
+        util.puts(res.statusCode);
+
         if (err) {
           return util.puts('upload failed:', err);
         }
 
         if (res.statusCode === 401) {
-          if (config.counter < 5) {
-            config.counter += 1;
-
             signOut().then(signIn).then(queryNextImage).then(uploadImage).then(null, function(error) {
-              util.puts('upload error');
               util.puts(error);
             });
-          } else {
-            config.active = false;
-            config.counter = 0;
-          }
         } else if (res.statusCode === 201) {
-          config.counter = 0;
-
           cleanUp(image)
             .then(queryNextImage)
             .then(uploadImage).then(null, function(error) {
-              util.puts('upload error');
               util.puts(error);
             });
 
@@ -241,14 +232,11 @@ var rule = new schedule.RecurrenceRule();
 rule.minute = 1;
 
 var j = schedule.scheduleJob(rule, function() {
-  if (!config.active) {
-    config.counter = 0;
     queryNextImage().then(null, function() {
       util.puts('query error');
     }).then(uploadImage).then(null, function() {
       util.puts('upload error');
     });
-  }
 });
 
 // var json = {

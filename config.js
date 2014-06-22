@@ -4,8 +4,6 @@ var config = {
   password: '',
   token: null,
   imageFolder: 'images/', // Rails authenticity_token
-  active: false,
-  counter: 0,
   keepImage: true
 };
 
