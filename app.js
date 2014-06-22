@@ -1,8 +1,16 @@
 var fs = require('fs'),
   util = require('util'),
+  request = require('request'), // https://github.com/mikeal/request
+  jsdom = require('jsdom').jsdom, // https://www.npmjs.org/package/jsdom
   schedule = require('node-schedule'), // https://www.npmjs.org/package/node-schedule
   mongoose = require('mongoose'), // http://mongoosejs.com/docs/queries.html
-  RSVP = require('rsvp'); // promise
+  RSVP = require('rsvp'); // promise https://www.npmjs.org/package/rsvp
+
+var request = request.defaults({
+  jar: true
+});
+
+var config = require('./config');
 
 // mongodb
 var Schema = mongoose.Schema;
@@ -47,73 +55,204 @@ initImage = {
   whiteBalance: null
 };
 
-var init = function() {
+var initMongoDB = function() {
   return new RSVP.Promise(function(resolve, reject) {
-    util.puts('running init...');
+    //util.puts('running init...');
     Model.find({}, function(err, data) {
       if (err) reject(err);
 
-      if (data.length) {
-        resolve(data);
-      } else {
+      if (!data.length) {
         var img = new Model(initImage);
         img.save();
-
-        resolve();
       }
+
+      resolve();
     });
   });
 };
 
-var queryImages = function() {
+var cleanUp = function(image) {
   return new RSVP.Promise(function(resolve, reject) {
-    util.puts('running query...');
-    Model.find({
-      'processed': true
+    image.processed = true;
+    image.save();
+
+    if (!config.keepImage) {
+      fs.unlink(config.imageFolder + data.fileName, function(err) {
+        if (err) reject(err);
+      });
+    }
+
+    resolve();
+  });
+};
+
+var queryNextImage = function() {
+  return new RSVP.Promise(function(resolve, reject) {
+    //util.puts('running query...');
+    Model.findOne({
+      'processed': false
     }, function(err, data) {
       if (err) reject(err);
-
-      if (data.length) {
-        resolve(data);
-      }
+      resolve(data);
     });
   });
 };
 
-var uploadImages = function(data) {
+var getToken = function(data) {
   return new RSVP.Promise(function(resolve, reject) {
-    util.puts('running upload...');
+    //util.puts('running token...');
+    var options = {
+      uri: config.uri + 'users/sign_in',
+      method: 'GET'
+    };
 
-    util.puts(data);
+    request.get(options, function(error, res, body) {
+      if (error) {
+        reject(error);
+      }
+
+      var doc = jsdom(body),
+        meta = doc.querySelector("meta[name=csrf-token]");
+
+      config.token = meta.getAttribute("content");
+
+      resolve(config.token);
+    });
   });
 };
 
+var signOut = function() {
+  return new RSVP.Promise(function(resolve, reject) {
+    request.del({
+      uri: config.uri + 'users/sign_out',
+      json: {
+        'utf8': '✓',
+        'authenticity_token': config.token,
+      }
+    }, function(error, res, body) {
+      if (error) reject(error);
 
-// run promises
-init().then(queryImages)
-  .then(null, function() {
-    util.puts('queryPromise error');
-  })
-  .then(uploadImages)
-  .then(null, function() {
-    util.puts('uploadPromise error');
+      resolve();
+    });
   });
+};
 
+var signIn = function() {
+  return new RSVP.Promise(function(resolve, reject) {
+    //util.puts('running signin...');
+    var options = {
+      uri: config.uri + 'users/sign_in.json',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      json: {
+        'utf8': '✓',
+        'authenticity_token': config.token,
+        'user': {
+          'username': config.username,
+          'password': config.password,
+          'remember_me': 1
+        }
+      }
+    };
 
-// configs.forEach(function(obj) {
-//   if (obj.property !== 'configData') {
-//     var value = payload[obj.property];
-//     var property = obj.property;
-//     Config.findOneAndUpdate({
-//       property: property
-//     }, {
-//       value: value
-//     }, function(err, data) {
-//       if (err) reply = {
-//         status: 0,
-//         message: err.message
-//       };
-//       obj.value = value;
-//     });
+    request(options, function(error, res, body) {
+      if (error) {
+        reject(error);
+      }
+
+      resolve();
+    });
+  });
+};
+
+var uploadImage = function(data) {
+  return new RSVP.Promise(function(resolve, reject) {
+    //util.puts('running upload...');
+    if (data === null) {
+      config.active = false;
+      return;
+    }
+    var imagePath = config.imageFolder + data.fileName;
+    var image = data;
+
+    config.active = true;
+
+    fs.readFile(imagePath, function(err, data) {
+
+      var r = request.post(config.uri + 'images.json', function optionalCallback(err, res, body) {
+        if (err) {
+          return util.puts('upload failed:', err);
+        }
+
+        if (res.statusCode === 401) {
+          if (config.counter < 5) {
+            config.counter += 1;
+
+            signOut().then(signIn).then(queryNextImage).then(uploadImage).then(null, function(error) {
+              util.puts('upload error');
+              util.puts(error);
+            });
+          }
+        } else if (res.statusCode === 201) {
+          config.counter = 0;
+
+          cleanUp(image)
+            .then(queryNextImage)
+            .then(uploadImage).then(null, function(error) {
+              util.puts('upload error');
+              util.puts(error);
+            });
+
+          resolve(image);
+        } else {
+          reject(res.statusCode);
+        }
+      });
+
+      var form = r.form();
+      form.append('utf8', '✓');
+      form.append('authenticity_token', config.token);
+      form.append('image[image]', fs.createReadStream(imagePath));
+    });
+  });
+};
+
+// run init promises
+initMongoDB().then(null, function() {
+  util.puts('initMongoDB error');
+}).then(signOut).then(null, function() {
+  util.puts('signOut error');
+}).then(getToken).then(null, function() {
+  util.puts('getToken error');
+}).then(queryNextImage).then(null, function() {
+  util.puts('query error');
+}).then(uploadImage).then(null, function() {
+  util.puts('upload error');
+});
+
+// Run upload process every 10 minutes
+var rule = new schedule.RecurrenceRule();
+rule.minute = 1;
+
+var j = schedule.scheduleJob(rule, function() {
+  if (!config.active) {
+    config.counter = 0;
+    queryNextImage().then(null, function() {
+      util.puts('query error');
+    }).then(uploadImage).then(null, function() {
+      util.puts('upload error');
+    });
+  }
+});
+
+// var json = {
+//   'utf8': '✓',
+//   'authenticity_token': config.token,
+//   'weather': {
+//     'weather_timestamp': new Date(),
+//     'temperature': 23
 //   }
-// });
+// };
